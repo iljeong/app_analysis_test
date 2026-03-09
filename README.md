@@ -22,6 +22,24 @@ Vrew(브루) 서비스의 App Store / Google Play 사용자 리뷰를 수집하�
 
 > 자세한 내용은 [분석결과_2026.md](분석결과_2026.md), [기존_신규_비교분석.md](기존_신규_비교분석.md) 참고
 
+## 경쟁사 비교: Vrew vs CapCut
+
+| 지표 | Vrew | CapCut |
+|------|------|--------|
+| 평균 별점 | **3.89점** | 2.42점 |
+| 긍정률 | **76.8%** | 64.4% |
+| 1점 비율 | 16.0% | 51.0% |
+| 한국 긍정률 | **67.3%** | 21.2% |
+
+- **CapCut의 핵심 불만은 유료화** — 부정 키워드 TOP 10 중 절반이 "유료", "유료화", "pro" 등 과금 관련
+- **Vrew의 불만은 기능 품질** — "자막", "ai", "음성" 등 기술적으로 개선 가능한 이슈
+- **한국 시장에서 Vrew가 압도적 우위** — CapCut 한국 긍정률 21.2% vs Vrew 67.3%
+
+![Vrew vs CapCut 별점](분석%20이미지%20파일/vs_rating_distribution.png)
+![부정 키워드 비교](분석%20이미지%20파일/vs_negative_keywords.png)
+
+> 자세한 내용은 [경쟁사_비교분석_CapCut.md](경쟁사_비교분석_CapCut.md) 참고
+
 ## 시각화 미리보기
 
 ### 별점 분포
@@ -50,29 +68,26 @@ Vrew(브루) 서비스의 App Store / Google Play 사용자 리뷰를 수집하�
 
 ```
 vrew/
-├── README.md                     # 프로젝트 소개
-├── 분석결과_2026.md               # 전체 분석 결과 리포트
-├── 기존_신규_비교분석.md           # 기존(2025.11) vs 신규(2026.03) 비교
+├── README.md                       # 프로젝트 소개
+├── 분석결과_2026.md                 # Vrew 전체 분석 리포트
+├── 기존_신규_비교분석.md             # 기존(2025.11) vs 신규(2026.03) 비교
+├── 경쟁사_비교분석_CapCut.md         # Vrew vs CapCut 경쟁사 비교
 ├── CSV 데이터/
-│   └── vrew_reviews_merged_2026.csv   # 최종 병합 데이터 (570건)
+│   ├── vrew_reviews_merged_2026.csv    # Vrew 리뷰 데이터 (570건)
+│   └── capcut_reviews_2026.csv         # CapCut 리뷰 데이터 (7,248건)
 ├── sentiment_out/
-│   └── reviews_with_sentiment_2026.csv  # 감성 분석 결과
+│   ├── reviews_with_sentiment_2026.csv     # Vrew 감성 분석 결과
+│   └── capcut_with_sentiment_2026.csv      # CapCut 감성 분석 결과
 ├── 분석 이미지 파일/
-│   ├── rating_distribution_2026.png     # 별점 분포
-│   ├── pos_top30_2026.png              # 긍정 키워드 TOP30
-│   ├── neg_top30_2026.png              # 부정 키워드 TOP30
-│   ├── wordcloud_positive_2026.png     # 긍정 워드클라우드
-│   ├── wordcloud_negative_2026.png     # 부정 워드클라우드
-│   ├── monthly_sentiment_2026.png      # 월별 감성 추이
-│   ├── platform_comparison_2026.png    # 플랫폼별 비교
-│   ├── country_sentiment_2026.png      # 국가별 감성 분포
-│   ├── comparison_rating_distribution.png  # 기존vs신규 별점 비교
-│   ├── comparison_sentiment.png            # 기존vs신규 감성 비교
-│   └── comparison_positivity_by_rating.png # 기존vs신규 긍정률 비교
+│   ├── *_2026.png                    # Vrew 분석 이미지
+│   ├── capcut_*.png                  # CapCut 분석 이미지
+│   ├── vs_*.png                      # Vrew vs CapCut 비교 이미지
+│   └── comparison_*.png              # 기존 vs 신규 비교 이미지
 └── 분석/크롤링/테스트 코드/
-    ├── 크롤링_2026.py             # 리뷰 크롤링 스크립트
-    ├── 통합_분석_2026.py           # 전처리 + 감성분석 + 시각화 통합
-    └── 브류 리뷰 크롤링.py         # 원본 크롤링 코드 (참고용)
+    ├── 크롤링_2026.py                # Vrew 리뷰 크롤링
+    ├── 통합_분석_2026.py              # Vrew 전처리 + 감성분석 + 시각화
+    ├── capcut_크롤링_분석.py          # CapCut 크롤링 + 분석 + 비교
+    └── 브류 리뷰 크롤링.py            # 원본 크롤링 코드 (참고용)
 ```
 
 ## 분석 파이프라인
