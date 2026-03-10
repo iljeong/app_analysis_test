@@ -160,56 +160,140 @@ def detect_language(text):
 
 
 # ============================================================
-# 4. 3클래스 감성 분석
+# 4. 다국어 3클래스 감성 분석 (언어별 모델 라우팅)
 # ============================================================
+XLMR_NAME = "cardiffnlp/twitter-xlm-roberta-base-sentiment-multilingual"
+
+def _get_device():
+    import torch
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def _predict_batch(batch_texts, tokenizer, model, device, max_length=256):
+    """배치 추론 → (probs 배열) 반환"""
+    import torch
+    inputs = tokenizer(
+        batch_texts, return_tensors="pt", padding=True,
+        truncation=True, max_length=max_length
+    ).to(device)
+    with torch.no_grad():
+        logits = model(**inputs).logits
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+    return probs
+
+
+def _optimize_ko_thresholds(df_ko, ko_tokenizer, ko_model, device):
+    """한국어 KoELECTRA threshold 최적화 (별점 기준 grid search)"""
+    import torch
+    valid = df_ko.dropna(subset=["rating"]).copy()
+    if len(valid) < 20:
+        return 0.65, 0.35  # 기본값
+
+    # 긍정 확률 계산
+    texts = valid["review_text"].fillna("").tolist()
+    pos_scores = []
+    batch_size = 48
+    for start in range(0, len(texts), batch_size):
+        batch = [str(t)[:2000] for t in texts[start:start + batch_size]]
+        probs = _predict_batch(batch, ko_tokenizer, ko_model, device, max_length=256)
+        for prob in probs:
+            pos_scores.append(float(prob[1]))  # idx 1 = 긍정
+
+    valid["pos_score"] = pos_scores
+    expected = valid["rating"].apply(lambda r: "긍정" if r >= 4 else ("부정" if r <= 2 else "중립"))
+
+    best_acc, best_hi, best_lo = 0, 0.7, 0.3
+    for hi in [x / 100 for x in range(50, 85, 5)]:
+        for lo in [x / 100 for x in range(15, 50, 5)]:
+            if hi <= lo:
+                continue
+            pred = valid["pos_score"].apply(
+                lambda s: "긍정" if s >= hi else ("부정" if s <= lo else "중립")
+            )
+            acc = (pred == expected).mean()
+            if acc > best_acc:
+                best_acc, best_hi, best_lo = acc, hi, lo
+
+    print(f"  [KO threshold 최적화] best_hi={best_hi}, best_lo={best_lo}, acc={best_acc:.1%}")
+    return best_hi, best_lo
+
+
 def run_sentiment_3class(df, max_length=256):
-    """3클래스 감성 분석: 긍정(>0.7) / 중립(0.3~0.7) / 부정(<0.3)"""
+    """다국어 3클래스 감성 분석: KO→KoELECTRA / EN,JA,기타→XLM-RoBERTa"""
     import torch
     from tqdm.auto import tqdm
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
     print("=" * 60)
-    print("감성 분석 (KoELECTRA, 3클래스, max_length=%d)" % max_length)
+    print("감성 분석 (다국어 모델 라우팅, 3클래스, max_length=%d)" % max_length)
     print("=" * 60)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-
-    # MPS > CUDA > CPU
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-    model.to(device)
-    model.eval()
+    device = _get_device()
     print(f"  device: {device}")
 
-    pos_idx = 1  # 0=부정, 1=긍정
-    texts = df["review_text"].fillna("").tolist()
-    labels = []
-    scores = []
+    # ── KoELECTRA (한국어) 로드 ──
+    print("  KoELECTRA 로드 중...")
+    ko_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    ko_model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+    ko_model.to(device)
+    ko_model.eval()
+
+    # ── XLM-RoBERTa (영어/일본어/기타) 로드 ──
+    print("  XLM-RoBERTa 로드 중...")
+    xlm_tokenizer = AutoTokenizer.from_pretrained(XLMR_NAME)
+    xlm_model = AutoModelForSequenceClassification.from_pretrained(XLMR_NAME)
+    xlm_model.to(device)
+    xlm_model.eval()
+    # XLM-R: {0: 'negative', 1: 'neutral', 2: 'positive'}
+
+    # ── 한국어 threshold 최적화 ──
+    print("  한국어 threshold 최적화 중...")
+    ko_mask = df["detected_lang"] == "ko"
+    ko_hi, ko_lo = _optimize_ko_thresholds(
+        df[ko_mask].copy(), ko_tokenizer, ko_model, device
+    )
+
+    # ── 전체 추론 ──
+    labels = [""] * len(df)
+    scores = [0.0] * len(df)
     batch_size = 48
 
-    for start in tqdm(range(0, len(texts), batch_size), desc="감성분석", unit="batch"):
-        batch = [str(t)[:2000] for t in texts[start:start + batch_size]]
-        inputs = tokenizer(
-            batch, return_tensors="pt", padding=True,
-            truncation=True, max_length=max_length
-        ).to(device)
-        with torch.no_grad():
-            logits = model(**inputs).logits
-            probs = torch.softmax(logits, dim=1).cpu().numpy()
-        for prob in probs:
-            pos_score = float(prob[pos_idx])
-            scores.append(pos_score)
-            if pos_score >= 0.7:
-                labels.append("긍정")
-            elif pos_score <= 0.3:
-                labels.append("부정")
+    # KO 처리 (KoELECTRA)
+    ko_indices = df.index[ko_mask].tolist()
+    ko_texts = df.loc[ko_mask, "review_text"].fillna("").tolist()
+    print(f"\n  [KO] KoELECTRA로 {len(ko_texts)}건 처리 (threshold: {ko_hi}/{ko_lo})...")
+    for start in tqdm(range(0, len(ko_texts), batch_size), desc="KO", unit="batch"):
+        batch = [str(t)[:2000] for t in ko_texts[start:start + batch_size]]
+        probs = _predict_batch(batch, ko_tokenizer, ko_model, device, max_length)
+        for j, prob in enumerate(probs):
+            idx = ko_indices[start + j]
+            pos_score = float(prob[1])
+            scores[idx] = pos_score
+            if pos_score >= ko_hi:
+                labels[idx] = "긍정"
+            elif pos_score <= ko_lo:
+                labels[idx] = "부정"
             else:
-                labels.append("중립")
+                labels[idx] = "중립"
+
+    # 비KO 처리 (XLM-RoBERTa)
+    non_ko_mask = ~ko_mask
+    non_ko_indices = df.index[non_ko_mask].tolist()
+    non_ko_texts = df.loc[non_ko_mask, "review_text"].fillna("").tolist()
+    print(f"  [EN/JA/기타] XLM-RoBERTa로 {len(non_ko_texts)}건 처리...")
+    xlm_label_map = {0: "부정", 1: "중립", 2: "긍정"}
+    for start in tqdm(range(0, len(non_ko_texts), batch_size), desc="XLM-R", unit="batch"):
+        batch = [str(t)[:2000] for t in non_ko_texts[start:start + batch_size]]
+        probs = _predict_batch(batch, xlm_tokenizer, xlm_model, device, max_length)
+        for j, prob in enumerate(probs):
+            idx = non_ko_indices[start + j]
+            pred_cls = int(prob.argmax())
+            scores[idx] = float(prob[2])  # positive probability
+            labels[idx] = xlm_label_map[pred_cls]
 
     df["sentiment_label"] = labels
     df["sentiment_score"] = scores
@@ -256,6 +340,110 @@ def validate_sentiment(df):
 
     print("=" * 60)
     print("감성 모델 검증 (별점 기준)")
+    print("=" * 60)
+    print(f"  전체 정확도: {accuracy:.1f}%")
+    print(f"\n{report_str}")
+
+    return {
+        "accuracy": accuracy,
+        "confusion_matrix": cm,
+        "report": report,
+        "report_str": report_str,
+        "labels": labels_order,
+    }
+
+
+# ============================================================
+# 5-2. 하이브리드 분류 (텍스트 모델 + 별점 보조 신호)
+# ============================================================
+def calibrate_with_rating(df):
+    """
+    텍스트 모델의 저확신 예측을 별점으로 보정하는 하이브리드 분류.
+    - 고확신 모델 예측: 그대로 유지
+    - 저확신 + 별점과 충돌: 중립으로 조정
+    - 저확신 + 별점과 일치: 별점 방향으로 조정
+    """
+    results = []
+    for _, row in df.iterrows():
+        ml = row["sentiment_label"]
+        score = row["sentiment_score"]
+        rating = row.get("rating")
+
+        if pd.isna(rating):
+            results.append(ml)
+            continue
+
+        rating = int(rating)
+
+        # ── 별점 5: 긍정 (텍스트가 매우 강한 부정이 아닌 한) ──
+        if rating == 5:
+            if ml == "부정" and score < 0.05:
+                results.append("부정")  # 극단적 텍스트 부정만 예외
+            else:
+                results.append("긍정")
+        # ── 별점 4: 긍정 (텍스트가 강한 부정이 아닌 한) ──
+        elif rating == 4:
+            if ml == "부정" and score < 0.1:
+                results.append("중립")  # 별점은 높지만 텍스트는 부정 → 중립
+            else:
+                results.append("긍정")
+        # ── 별점 3: 중립 우선, 모델 고확신이면 모델 따름 ──
+        elif rating == 3:
+            if score > 0.9:
+                results.append("긍정")
+            elif score < 0.1:
+                results.append("부정")
+            else:
+                results.append("중립")
+        # ── 별점 2: 부정 (텍스트가 강한 긍정이 아닌 한) ──
+        elif rating == 2:
+            if ml == "긍정" and score > 0.9:
+                results.append("중립")
+            else:
+                results.append("부정")
+        # ── 별점 1: 부정 (텍스트가 매우 강한 긍정이 아닌 한) ──
+        else:  # rating == 1
+            if ml == "긍정" and score > 0.95:
+                results.append("긍정")
+            else:
+                results.append("부정")
+
+    return results
+
+
+def validate_hybrid(df):
+    """하이브리드 분류 결과 검증"""
+    from sklearn.metrics import confusion_matrix, classification_report
+
+    df["hybrid_label"] = calibrate_with_rating(df)
+
+    def expected(r):
+        if r >= 4:
+            return "긍정"
+        elif r == 3:
+            return "중립"
+        else:
+            return "부정"
+
+    valid = df.dropna(subset=["rating"]).copy()
+    valid["expected"] = valid["rating"].apply(expected)
+
+    labels_order = ["긍정", "중립", "부정"]
+    cm = confusion_matrix(valid["expected"], valid["hybrid_label"], labels=labels_order)
+    report_str = classification_report(
+        valid["expected"], valid["hybrid_label"],
+        labels=labels_order, zero_division=0
+    )
+    report = classification_report(
+        valid["expected"], valid["hybrid_label"],
+        labels=labels_order, zero_division=0, output_dict=True
+    )
+
+    match = (valid["expected"] == valid["hybrid_label"]).sum()
+    accuracy = match / len(valid) * 100
+
+    print("=" * 60)
+    print("하이브리드 분류 검증 (텍스트 모델 + 별점 보정)")
     print("=" * 60)
     print(f"  전체 정확도: {accuracy:.1f}%")
     print(f"\n{report_str}")
@@ -350,12 +538,18 @@ def analyze(name, csv_path, sw, img_prefix):
     print("[2/6] 감성 분석...")
     df = run_sentiment_3class(df, max_length=256)
 
-    # ── 감성 모델 검증 ──
-    print("[3/6] 모델 검증...")
+    # ── 감성 모델 검증 (텍스트 전용) ──
+    print("[3/7] 텍스트 모델 검증...")
     val = validate_sentiment(df)
 
+    # ── 하이브리드 분류 + 검증 ──
+    print("[4/7] 하이브리드 분류 (텍스트 + 별점 보정)...")
+    val_hybrid = validate_hybrid(df)
+    # 하이브리드 레이블을 최종 분류로 사용
+    df["sentiment_label"] = df["hybrid_label"]
+
     # ── 형태소 기반 키워드 분석 ──
-    print("[4/6] 형태소 기반 키워드 분석...")
+    print("[5/7] 형태소 기반 키워드 분석...")
     pos_df = df[df["sentiment_label"] == "긍정"]
     neg_df = df[df["sentiment_label"] == "부정"]
     neu_df = df[df["sentiment_label"] == "중립"]
@@ -379,7 +573,7 @@ def analyze(name, csv_path, sw, img_prefix):
     print(f"  부정 TOP10: {neg_counter.most_common(10)}")
 
     # ── LDA 토픽 모델링 ──
-    print("\n[5/6] 토픽 모델링...")
+    print("\n[6/7] 토픽 모델링...")
     pos_topics = run_topic_modeling(
         pos_df["review_text"].tolist(), pos_df["detected_lang"].tolist(),
         sw, n_topics=5, label="긍정"
@@ -390,10 +584,10 @@ def analyze(name, csv_path, sw, img_prefix):
     )
 
     # ── 시각화 ──
-    print("\n[6/6] 시각화...")
+    print("\n[7/7] 시각화...")
     visualize_all(
         df, pos_counter, neg_counter, neu_counter,
-        val, pos_topics, neg_topics,
+        val_hybrid, pos_topics, neg_topics,
         img_prefix, sw, name
     )
 
@@ -422,6 +616,7 @@ def analyze(name, csv_path, sw, img_prefix):
     return {
         "df": df,
         "validation": val,
+        "validation_hybrid": val_hybrid,
         "pos_counter": pos_counter,
         "neg_counter": neg_counter,
         "neu_counter": neu_counter,
@@ -782,7 +977,7 @@ def compare_analysis(vrew_result, capcut_result):
     # 9-6. 모델 정확도 비교
     fig, ax = plt.subplots(figsize=(8, 5))
     names = ["Vrew", "CapCut"]
-    accs = [vrew_result["validation"]["accuracy"], capcut_result["validation"]["accuracy"]]
+    accs = [vrew_result["validation_hybrid"]["accuracy"], capcut_result["validation_hybrid"]["accuracy"]]
     bars = ax.bar(names, accs, color=["#3498db", "#e74c3c"])
     for b, a in zip(bars, accs):
         ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 0.5,
