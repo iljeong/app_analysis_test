@@ -37,7 +37,7 @@ SENT_DIR.mkdir(exist_ok=True)
 IMG_DIR.mkdir(exist_ok=True)
 
 # 폰트
-plt.rcParams["font.family"] = "AppleGothic"
+plt.rcParams["font.family"] = "Noto Sans CJK KR"
 plt.rcParams["axes.unicode_minus"] = False
 
 MODEL_NAME = "jaehyeong/koelectra-base-v3-generalized-sentiment-analysis"
@@ -727,7 +727,7 @@ def visualize_all(df, pos_counter, neg_counter, neu_counter, val,
         plt.close()
 
     # 8-6. 워드클라우드 (긍정/부정)
-    font_path = "/System/Library/Fonts/AppleGothic.ttf"
+    font_path = "/Users/seojeong-il/Library/Fonts/NotoSansCJKkr-Regular.otf"
     for label, counter, cmap_name in [("긍정", pos_counter, "Greens"), ("부정", neg_counter, "Reds")]:
         if not counter:
             continue
